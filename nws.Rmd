@@ -1,0 +1,196 @@
+---
+title: "Analysis of NWS storm data"
+author: "Rohil Narula"
+date: "8 July 2018"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Analysis of NWS storm data
+
+## Synopsis
+
+Storms and other severe weather events can cause both public health and economic problems for communities and municipalities. Many severe events can result in fatalities, injuries, and property damage, and preventing such outcomes to the extent possible is a key concern.
+This analysis paper attempts to garner some insight as to questions such as which types of events are most harmful with respect to population health and which ones have the greatest economic impact. The data analyzed can be found at the [National Weather Service repository](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2) and the documentation for this dataset can be downloaded from [Storm Data documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf).
+In this paper, the data from the above sources will be cleaned and processed and then analyzed by comparing variables and performing cluster analysis.
+
+## Getting the data
+
+### Setting environment data and path
+
+First, the required libraries are loaded into R, which help with processing and analyzing the data.
+```{r, message = FALSE, warning = FALSE}
+packages <- c("dplyr", "ggplot2", "reshape2", "tidyr")
+sapply(packages, require, character.only = TRUE, quietly = TRUE)
+```
+
+Path is set to the location on the computer where the files are kept to be analyzed. For reproducibility reasons, this code could be changed if the reader wants to store the files in another location.
+```{r}
+setwd("~/Data Science/nws-stormanalysis")
+```
+
+### Downloading and unzipping data
+
+This set of code checks whether the `.csv` or `.bz2` files are present in the path directory. If the `.bz2` is not available, this code attempts to download it from the repository link. The link is currently working as of the system time which is outputted below.
+```{r, message = FALSE, warning = FALSE}
+# If both the .bz2 and .csv are not found
+if (!file.exists("repdata_data_StormData.csv.bz2") && !file.exists("repdata_data_StormData.csv")) {
+  url <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+  download.file(url, file.path(getwd(), "repdata_data_StormData.csv.bz2"))
+}
+
+# If the .csv is not found but the .bz2 is present
+if (file.exists("repdata_data_StormData.csv.bz2") && !file.exists("repdata_data_StormData.csv")) {
+  zipPath <- file.path("C:", "Program Files", "7-Zip", "7z.exe")
+  arguments <- c("x")
+  f <- "repdata_data_StormData.csv.bz2"
+  system(paste0("\"", zipPath, "\" ", arguments, " \"", file.path(getwd(), f), "\""))
+}
+```
+
+## Data Processing
+
+### Loading the data
+
+The `.csv` file obtained from the repository is then loaded into a variable `nws` in the R global environment.
+```{r, cache = TRUE}
+nws <- tbl_df(read.csv("repdata_data_StormData.csv", na.strings = "", strip.white = TRUE))
+```
+
+### Date and time formatting
+
+The dates and times are formatted. This helps plot the variables against time if needed and is generally tidy.
+
+```{r, cache = TRUE}
+dates <- strsplit(as.character(nws$BGN_DATE), " ")
+dates <- sapply(dates, function(x) return(x[1]))
+dates <- paste(dates, nws$BGN_TIME)
+nws$dates <- as.POSIXct(strptime(dates, "%m/%d/%Y %H%M"))
+# rm("dates")
+head(nws$dates)
+```
+
+Removing redundant features `BGN_DATE` and `BGN_TIME`, since both the variables have been coerced and combined.
+
+```{r}
+nws <- select(nws, STATE__, dates, TIME_ZONE, COUNTY:REFNUM)
+nws
+```
+
+## Results
+
+### Exploratory analysis
+By quickly analyzing the variables of the dataset, some variables seem key to our analysis, like `FATALITIES` and `INJURIES`.
+```{r}
+names(nws)
+```
+
+Now, by looking at the variable `EVTYPE`, the most occuring natural disaster can be found.
+```{r}
+occurances <- tbl_df(data.frame(table(nws$EVTYPE)))
+arrange(occurances, desc(Freq))
+```
+
+Plotting the top five occurances:
+
+```{r, echo = FALSE}
+top5 <- arrange(occurances, desc(Freq))[1:5, ]
+g <- ggplot(top5, aes(Var1, Freq))
+g + geom_bar(stat = "identity", fill = "steelblue", position = 'dodge') + theme_minimal() + geom_text(aes(label = Freq), position = position_dodge(width = 0.9), vjust = -0.25) + scale_x_discrete(labels = abbreviate)
+```
+
+### Analyzing events harmful to population health
+
+Now, the variables `FATALITIES` and `INJURIES` are extracted from the data set and sorted.
+
+```{r}
+nws <- group_by(nws, EVTYPE)
+summary <- summarize(nws, FATALITIES = sum(FATALITIES), INJURIES = sum(INJURIES))
+arrange(summary, desc(FATALITIES), desc(INJURIES))
+```
+
+Note how the injuries are skewed in favour of tornadoes.
+
+Plotting the most harmful events.
+
+Here, the size of each bar indicates the amount of fatalities and injuries. Fatalities are colored orange, while injuries are colored turquoise. The name under each bar indicates the abbreviation for each event type.
+
+```{r, echo = FALSE}
+top5 <- arrange(summary, desc(FATALITIES), desc(INJURIES))[1:5, ]
+top5 <- reshape2::melt(top5, c("EVTYPE"))
+g <- ggplot(top5, aes(EVTYPE, value, fill = factor(variable)))
+g + geom_bar(stat = "identity", position = 'dodge') + theme_minimal() + geom_text(aes(label = value), position = position_dodge(width = 0.9), vjust = -0.25) + scale_x_discrete(labels = abbreviate) + xlab("Abbreviated events") + ylab("Injuries and fatalities") + labs(fill = "Harm type")
+```
+
+### Analyzing events harmful to economy
+
+In this section, the variables `PROPDMG` and `CROPDMG` will be analyzed along with their exponents. Note that the values in these variables are broad estimates according to the dataset documentation.
+
+First, the property and crop damages are calculated with respect to their exponents.
+
+```{r, cache = TRUE}
+propertydmg <- numeric(nrow(nws))
+
+for (i in 1:length(propertydmg)) {
+    exp <- as.character(nws$PROPDMGEXP[i])
+    damage <- nws$PROPDMG[i]
+    if (is.na(exp)) {propertydmg[i] <- damage; next}
+    if (exp == "k" | exp == "K") {damage <- damage * 10 ^ 3}
+    if (exp == "m" | exp == "M") {damage <- damage * 10 ^ 6}
+    if (exp == "b" | exp == "B") {damage <- damage * 10 ^ 9}
+    propertydmg[i] <- damage
+}
+
+nws$propertydmg <- propertydmg
+```
+
+```{r, cache = TRUE}
+cropdmg <- numeric(nrow(nws))
+
+for (i in 1:length(cropdmg)) {
+    exp <- as.character(nws$CROPDMGEXP[i])
+    damage <- nws$CROPDMG[i]
+    if (is.na(exp)) {cropdmg[i] <- damage; next}
+    if (exp == "k" | exp == "K") {damage <- damage * 10 ^ 3}
+    if (exp == "m" | exp == "M") {damage <- damage * 10 ^ 6}
+    if (exp == "b" | exp == "B") {damage <- damage * 10 ^ 9}
+    cropdmg[i] <- damage
+}
+
+nws$cropdmg <- cropdmg
+```
+
+Adding both the damages together to create total damage in variable `totaldmg`.
+
+```{r}
+nws <- mutate(nws, totaldmg = propertydmg + cropdmg)
+nws <- arrange(nws, desc(totaldmg))
+summary <- summarize(nws, TOTALDMG = sum(totaldmg))
+arrange(summary, desc(TOTALDMG))
+```
+
+It seems that floods cause the most damage in property, followed by hurricanes and tornadoes.
+
+Plotting the most harmful events.
+
+Here, the five most harmful events to the economy are shown. The height of the bar indicates the total damage to both property and crops. The names under each bar indicate the abbreviation for each event type.
+
+```{r, echo = FALSE}
+top5 <- arrange(summary, desc(TOTALDMG))[1:5, ]
+g <- ggplot(top5, aes(EVTYPE, TOTALDMG, fill = EVTYPE))
+g + geom_bar(stat = "identity", position = 'dodge') + theme_minimal() + scale_x_discrete(labels = abbreviate) + xlab("Abbreviated events") + ylab("Total property and crop damage") + labs(fill = "Event type")
+```
+
+### Conclusion
+
+The following conclusions were made after the following analysis:
+ The most common occurance of a disaster are hailstorms followed by thunderstorm winds. Tornadoes and flash floods also occur frequently.
+ Tornades are the absolute leaders in terms of harm to population. They are followed by excessive heat and lightning, albeit far ahead.
+ In terms of economic damage, floods are the leaders. Hurricanes and tornadoes also cause significant damage to property and crops.
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
